@@ -7,17 +7,29 @@ const ProductForm = ({ onProductAdded }) => {
     const [name, setName] = useState('');
     const [description, setDescription] = useState('');
     const [price, setPrice] = useState('');
+    const [Category, setCategory] = useState('');
 
     const handleSubmit = async (event) => {
         event.preventDefault();
         const newProduct = { id, name, description, price: parseFloat(price) };
         try {
-            const response = await axios.post('https://localhost:44373/api/Products/CreateProduct', newProduct);
-            onProductAdded(response.data);
+         //   const response = await axios.post('https://localhost:44373/api/Products/CreateProduct', newProduct);
+            const response = await   axios({
+                method: 'post',
+                url: 'https://localhost:44373/api/Products/CreateProduct',
+                headers: {},
+                data: {
+                    ...newProduct, // This is the body part
+                  
+                }
+            });
+            console(response);
+          //  onProductAdded(response.data);
             setId('');
             setName('');
             setDescription('');
             setPrice('');
+            setCategory('');
         } catch (error) {
             console.error('Error creating product:', error);
             // Handle error: Display an error message to the user or take appropriate action.
@@ -63,6 +75,16 @@ const ProductForm = ({ onProductAdded }) => {
                     value={price}
                     onChange={(e) => setPrice(e.target.value)}
                     step="0.01"
+                    required
+                />
+            </div>
+            <div className="form-field">
+                <label htmlFor="Category">Category</label>
+                <input
+                    type="text"
+                    id="Category"
+                    value={Category}
+                    onChange={(e) => setCategory(e.target.value)}
                     required
                 />
             </div>
