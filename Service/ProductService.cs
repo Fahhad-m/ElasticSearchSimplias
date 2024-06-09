@@ -28,8 +28,13 @@ namespace SearchAPI.Service
 
         public async Task<IEnumerable<Product>> SearchProductsAsync(string query)
         {
-           
-            var response = await _elasticClient.SearchAsync<Product>(s => s
+         //   var ab = Product;
+            var pingResponse = await _elasticClient.PingAsync();
+            if (pingResponse.IsValid)
+            {
+
+            }
+                var response = await _elasticClient.SearchAsync<Product>(s => s
             .Index("products")
             .From(0)
             .Size(10)
@@ -44,14 +49,15 @@ namespace SearchAPI.Service
                     )
                 )
             );
-            if (!response.IsValid)
-            {
-                _logger.LogError("Search Query Failed Due To", response.OriginalException.Message);
-                throw new Exception("Search Query Failed+" + response.OriginalException.Message + " +");
+                if (!response.IsValid)
+                {
+                    _logger.LogError("Search Query Failed Due To", response.OriginalException.Message);
+                    throw new Exception("Search Query Failed+" + response.OriginalException.Message + " +");
 
-            }
+                }
 
-            return response.Documents;
+                return response.Documents;
+            
         }
 
         public async Task<string> CreateProductsAsync(Product product)

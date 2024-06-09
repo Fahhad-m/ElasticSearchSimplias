@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using Nest;
 using System;
 using System.Net;
 using System.Threading.Tasks;
@@ -19,6 +20,7 @@ public class ExceptionMiddleware
     {
         try
         {
+            httpContext.Request.ContentType = "application/json";
             await _next(httpContext);
         }
         catch (Exception ex)

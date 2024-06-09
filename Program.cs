@@ -6,6 +6,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using System.Collections.Specialized;
+
 var builder = WebApplication.CreateBuilder(args);
 
 
@@ -16,7 +18,33 @@ builder.Configuration.AddJsonFile("appsettings.json", optional: false, reloadOnC
 builder.Services.AddControllers();
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 var elasticsearchUri = new Uri(builder.Configuration["Elasticsearch:Uri"]);
-var settings = new ConnectionSettings(elasticsearchUri).DefaultIndex("products");
+//var settings = new ConnectionSettings(elasticsearchUri).DefaultIndex("products")
+//       .ThrowExceptions(alwaysThrow: true) // I like exceptions
+//          .PrettyJson() // Good for DEBUG
+//          .RequestTimeout(TimeSpan.FromSeconds(300))
+//          .ApiKeyAuthentication("Authorization", "ApiKey MFdmci1JOEJLUHRQSmRaYXNVVms6anh0MUw0MENUd2UtNW9zbFJYNFZPQQ==")
+//          .GlobalHeaders(new NameValueCollection
+//    {
+//        { "Authorization", "ApiKey MFdmci1JOEJLUHRQSmRaYXNVVms6anh0MUw0MENUd2UtNW9zbFJYNFZPQQ==" }
+//    });
+string elasticServiceUrl = builder.Configuration["Elasticsearch:Uri"];
+string Key = builder.Configuration["Elasticsearch:ApiKey"];
+string value3 = builder.Configuration["Elasticsearch:Username"];
+string KeyValue = builder.Configuration["Elasticsearch:Value"];
+string defIndex = builder.Configuration["Elasticsearch:Index"];
+
+var settings = new ConnectionSettings(elasticsearchUri).DefaultIndex(defIndex)
+       .ThrowExceptions(alwaysThrow: true) 
+          .PrettyJson() 
+          .RequestTimeout(TimeSpan.FromSeconds(300))
+          .ApiKeyAuthentication(Key, KeyValue)
+          .GlobalHeaders(new NameValueCollection
+    {
+        { Key, KeyValue  }
+    });
+
+
+//string value5 = builder.Configuration["Elasticsearch:Index"];
 var client = new ElasticClient(settings);
 
 builder.Services.AddSingleton<IElasticClient>(client);

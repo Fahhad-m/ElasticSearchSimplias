@@ -11,7 +11,7 @@ const ProductForm = ({ onProductAdded }) => {
 
     const handleSubmit = async (event) => {
         event.preventDefault();
-        const newProduct = { id, name, description, price: parseFloat(price) };
+        const newProduct = { id, name, description, price: parseFloat(price), Category };
         try {
          //   const response = await axios.post('https://localhost:44373/api/Products/CreateProduct', newProduct);
             const response = await   axios({
