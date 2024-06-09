@@ -11,30 +11,22 @@ namespace SearchAPI.Service
         private readonly IElasticClient _elasticClient;
 
         private readonly ILogger<ProductService> _logger;
-        private readonly string? _connectionString;
-
-
-        public ProductService(IElasticClient elasticClient, ILogger<ProductService> logger, string? connectionString)
+        private readonly ElasticSettings _elasticSettings;
+        public ProductService(IElasticClient elasticClient, ILogger<ProductService> logger, ElasticSettings elasticSettings)
         {
             _elasticClient = elasticClient;
             _logger = logger;
-            _connectionString = connectionString;
+            _elasticSettings = elasticSettings;
         }
-
-        //public ProductService(string? connectionString)
-        //{
-        //    _connectionString = connectionString;
-        //}
-
         public async Task<IEnumerable<Product>> SearchProductsAsync(string query)
         {
-         //   var ab = Product;
+
             var pingResponse = await _elasticClient.PingAsync();
             if (pingResponse.IsValid)
             {
 
             }
-                var response = await _elasticClient.SearchAsync<Product>(s => s
+            var response = await _elasticClient.SearchAsync<Product>(s => s
             .Index("products")
             .From(0)
             .Size(10)
@@ -63,8 +55,7 @@ namespace SearchAPI.Service
         public async Task<string> CreateProductsAsync(Product product)
         {
             String str = string.Empty;
-            // var response = await _elasticClient.IndexDocumentAsync(product);
-            using (var connection = new SqlConnection(_connectionString))
+            using (var connection = new SqlConnection(_elasticSettings.SqlDBConnection))
             {
                 await connection.OpenAsync();
                 var command = new SqlCommand("INSERT INTO Products (Name, Description, Price, Category) OUTPUT INSERTED.Id VALUES (@Name, @Description, @Price, @Category)", connection);
@@ -74,25 +65,18 @@ namespace SearchAPI.Service
                 command.Parameters.AddWithValue("@Category", product.Category);
 
                 int value = (int)await command.ExecuteScalarAsync();
-
                 if (value > 0)
                 {
                     str = "Product created";
                 }
                 else { str = "data not inserted in DB"; }
             }
-            // return response.IsValid ? "Product created":"";
             return str;
         }
 
-        //public async Task<string> DeleteProductAsync(int id)
-        // {
-        //     var response = await _elasticClient.DeleteAsync( new DocumentPath<Product>(id));
-        //     return response.IsValid ? "Product Deleted" : "";
-        // }
         public async Task DeleteProductAsync(int id)
         {
-            using (var connection = new SqlConnection(_connectionString))
+            using (var connection = new SqlConnection(_elasticSettings.SqlDBConnection))
             {
                 await connection.OpenAsync();
                 var command = new SqlCommand("DELETE FROM Products WHERE Id = @Id", connection);
@@ -104,7 +88,7 @@ namespace SearchAPI.Service
 
         public async Task UpdateProductAsync(Product product)
         {
-            using (var connection = new SqlConnection(_connectionString))
+            using (var connection = new SqlConnection(_elasticSettings.SqlDBConnection))
             {
                 await connection.OpenAsync();
                 var command = new SqlCommand("UPDATE Products SET Name = @Name, Description = @Description, Price = @Price, Category = @Category WHERE Id = @Id", connection);
@@ -120,12 +104,7 @@ namespace SearchAPI.Service
         public async Task<Product> GetProductsAsync(int id)
         {
             Product product = null;
-            //IDbConnection connection = new SqlConnection(_connectionString);
-            //propa = connection.Database.
-            //var product = await _elasticClient.GetAsync(new DocumentPath<Product>(id));
-            //var response = await _elasticClient.GetAsync(new DocumentPath<Product>(id));
-            //return response.Source;
-            using (var connection = new SqlConnection(_connectionString))
+            using (var connection = new SqlConnection(_elasticSettings.SqlDBConnection))
             {
                 var query = "SELECT Id, Name, Description, Price FROM Products WHERE Id = @Id";
                 var command = new SqlCommand(query, connection);
@@ -155,7 +134,7 @@ namespace SearchAPI.Service
             try
             {
                 List<Product> products = new List<Product>();
-                using (var connection = new SqlConnection(_connectionString))
+                using (var connection = new SqlConnection(_elasticSettings.SqlDBConnection))
                 {
                     var query = "SELECT Id, Name, Description, Price FROM Products ";
                     var command = new SqlCommand(query, connection);
@@ -170,7 +149,8 @@ namespace SearchAPI.Service
                             }
                             catch (Exception ex)
                             {
-                               // throw ex;
+                                _logger.LogError(ex, "Check Db Connection");
+                                throw;
                             }
                             if (dt.Rows.Count > 0)
                             {
@@ -179,9 +159,9 @@ namespace SearchAPI.Service
                                             select new Product
                                             {
                                                 Id = Convert.ToInt32( row["Id"]),
-                                                Name = row["Name"].ToString()
+                                                Name = row["Name"].ToString()?? string.Empty
                                                 ,
-                                                Description = row["Description"].ToString(),
+                                                Description = row["Description"].ToString() ?? string.Empty,
                                                 Price = Convert.ToInt32(row["Price"])
                                                 
                                             }).ToList();
@@ -189,8 +169,6 @@ namespace SearchAPI.Service
                             }
                         }
                     }
-                    
-                         
                      return products;
                 }
             }
