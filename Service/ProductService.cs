@@ -24,7 +24,11 @@ namespace SearchAPI.Service
             var pingResponse = await _elasticClient.PingAsync();
             if (pingResponse.IsValid)
             {
+                var existsResponse = _elasticClient.Indices.Exists("products");
+                if (existsResponse != null)
+                {
 
+                }
             }
             var response = await _elasticClient.SearchAsync<Product>(s => s
             .Index("products")
@@ -41,15 +45,15 @@ namespace SearchAPI.Service
                     )
                 )
             );
-                if (!response.IsValid)
-                {
-                    _logger.LogError("Search Query Failed Due To", response.OriginalException.Message);
-                    throw new Exception("Search Query Failed+" + response.OriginalException.Message + " +");
+            if (!response.IsValid)
+            {
+                _logger.LogError("Search Query Failed Due To", response.OriginalException.Message);
+                throw new Exception("Search Query Failed+" + response.OriginalException.Message + " +");
 
-                }
+            }
 
-                return response.Documents;
-            
+            return response.Documents;
+
         }
 
         public async Task<string> CreateProductsAsync(Product product)
@@ -158,18 +162,18 @@ namespace SearchAPI.Service
 
                                             select new Product
                                             {
-                                                Id = Convert.ToInt32( row["Id"]),
-                                                Name = row["Name"].ToString()?? string.Empty
+                                                Id = Convert.ToInt32(row["Id"]),
+                                                Name = row["Name"].ToString() ?? string.Empty
                                                 ,
                                                 Description = row["Description"].ToString() ?? string.Empty,
                                                 Price = Convert.ToInt32(row["Price"])
-                                                
+
                                             }).ToList();
 
                             }
                         }
                     }
-                     return products;
+                    return products;
                 }
             }
             catch (Exception ex)

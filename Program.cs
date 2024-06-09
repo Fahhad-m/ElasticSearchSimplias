@@ -17,15 +17,16 @@ builder.Configuration.AddJsonFile("appsettings.json", optional: false, reloadOnC
 builder.Services.AddControllers();
 var elasettings = new ElasticSettings()
 {
-    SqlDBConnection = builder.Configuration.GetConnectionString("DefaultConnection")?? string.Empty,
+    SqlDBConnection = builder.Configuration.GetConnectionString("DefaultConnection") ?? string.Empty,
     ApiKey = builder.Configuration["Elasticsearch:ApiKey"] ?? string.Empty,
-    ElaUri = new Uri(builder.Configuration["Elasticsearch:Uri"]) ,
-Username = builder.Configuration["Elasticsearch:Username"] ?? string.Empty,
+    ElaUri = new Uri(builder.Configuration["Elasticsearch:Uri"]),
+    Username = builder.Configuration["Elasticsearch:Username"] ?? string.Empty,
     ApiValue = builder.Configuration["Elasticsearch:Value"] ?? string.Empty,
     ElaIndex = builder.Configuration["Elasticsearch:Index"] ?? string.Empty,
     ReactUrl = builder.Configuration["React:PageUrl"] ?? string.Empty,
 };
-var settings = new ConnectionSettings(elasettings.ElaUri).DefaultIndex(elasettings.ElaIndex)
+var settings = new ConnectionSettings(elasettings.ElaUri)
+    .DefaultIndex(elasettings.ElaIndex)
        .ThrowExceptions(alwaysThrow: true)
           .PrettyJson()
           .RequestTimeout(TimeSpan.FromSeconds(300))
@@ -35,6 +36,7 @@ var settings = new ConnectionSettings(elasettings.ElaUri).DefaultIndex(elasettin
         { elasettings.ApiKey, elasettings.ApiValue }
     });
 var client = new ElasticClient(settings);
+
 builder.Services.AddSingleton<IElasticClient>(client);
 builder.Services.AddScoped<IProductService, ProductService>(provider =>
     new ProductService(client, provider.GetRequiredService<ILogger<ProductService>>(), elasettings));
