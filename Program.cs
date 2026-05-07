@@ -41,6 +41,7 @@ builder.Services.AddSingleton<IElasticClient>(client);
 builder.Services.AddSingleton(elasettings);
 builder.Services.AddScoped<IProductService, ProductService>();
 builder.Services.AddScoped<IElasticsearchService, ElasticsearchService>();
+builder.Services.AddHostedService<ElasticsearchIndexingService>();
 builder.Services.AddLogging(configure => configure.AddConsole());
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();

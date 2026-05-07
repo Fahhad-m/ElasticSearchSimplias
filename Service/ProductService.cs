@@ -6,6 +6,9 @@ using System.Data;
 
 namespace SearchAPI.Service
 {
+    /// <summary>
+    /// Implements SQL database operations and Elasticsearch search for Products.
+    /// </summary>
     public class ProductService : IProductService
     {
         private readonly IElasticClient _elasticClient;
@@ -33,9 +36,9 @@ namespace SearchAPI.Service
                     .Query(q => q
                         .MultiMatch(m => m
                             .Fields(f => f
+                                .Field(p => p.Id)
                                 .Field(p => p.Name)
                                 .Field(p => p.Description)
-                                .Field(p => p.Category)
                             )
                             .Query(query)
                         )

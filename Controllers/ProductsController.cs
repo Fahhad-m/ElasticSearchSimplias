@@ -4,6 +4,11 @@ using SearchAPI.Models;
 
 namespace SearchAPI.Controllers
 {
+    /// <summary>
+    /// Manages CRUD operations for Products.
+    /// Writes go to both SQL and Elasticsearch to keep data in sync.
+    /// Reads come from SQL.
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     public class ProductsController : ControllerBase
@@ -17,24 +22,6 @@ namespace SearchAPI.Controllers
             _productService = productService;
             _elasticsearchService = elasticsearchService;
             _logger = logger;
-        }
-
-        [HttpGet("search")]
-        public async Task<IActionResult> Search([FromQuery] string query)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(query))
-                    return BadRequest("Search query cannot be empty.");
-
-                var products = await _productService.SearchProductsAsync(query);
-                return Ok(products);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error in Search.");
-                return StatusCode(500, "An error occurred while searching products.");
-            }
         }
 
         [HttpPost("CreateProducts")]
