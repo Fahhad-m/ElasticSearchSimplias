@@ -1,11 +1,12 @@
 using Microsoft.AspNetCore.Mvc;
 using SearchAPI.Interfaces;
+using SearchAPI.Models;
 
 namespace SearchAPI.Controllers
 {
     /// <summary>
-    /// Provides the /api/search endpoint that queries the Elasticsearch
-    /// products index across Id, Name, and Description fields.
+    /// GET /api/search?query=...
+    /// Full-text search via Elasticsearch across Id, Name, and Description fields.
     /// </summary>
     [ApiController]
     [Route("api/[controller]")]
@@ -20,26 +21,21 @@ namespace SearchAPI.Controllers
             _logger = logger;
         }
 
-        /// <summary>
-        /// Searches products in Elasticsearch by Id, Name, and Description.
-        /// </summary>
-        /// <param name="query">The search term.</param>
-        /// <returns>Matching products from Elasticsearch.</returns>
         [HttpGet]
         public async Task<IActionResult> Search([FromQuery] string query)
         {
+            if (string.IsNullOrWhiteSpace(query))
+                return BadRequest(ApiResponse<IEnumerable<Product>>.Fail("Query parameter is required."));
+
             try
             {
-                if (string.IsNullOrWhiteSpace(query))
-                    return BadRequest("Search query cannot be empty.");
-
                 var products = await _productService.SearchProductsAsync(query);
-                return Ok(products);
+                return Ok(ApiResponse<IEnumerable<Product>>.Ok(products));
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in /api/search.");
-                return StatusCode(500, "An error occurred while searching products.");
+                _logger.LogError(ex, "Search failed for query '{Query}'.", query);
+                return StatusCode(500, ApiResponse<IEnumerable<Product>>.Fail("Search failed."));
             }
         }
     }

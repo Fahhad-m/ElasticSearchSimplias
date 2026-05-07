@@ -1,11 +1,12 @@
-﻿using Nest;
+using Nest;
 using SearchAPI.Interfaces;
 using SearchAPI.Models;
 
 namespace SearchAPI.Service
 {
     /// <summary>
-    /// Handles all Elasticsearch CRUD and index-management operations for Products.
+    /// All Elasticsearch operations. Every write uses product.Id as the ES document Id,
+    /// making all operations idempotent (safe to retry without creating duplicates).
     /// </summary>
     public class ElasticsearchService : IElasticsearchService
     {
@@ -18,140 +19,159 @@ namespace SearchAPI.Service
             _logger = logger;
         }
 
-        /// <inheritdoc />
         public async Task EnsureIndexCreatedAsync()
         {
-            try
+            var existsResponse = await _client.Indices.ExistsAsync("products");
+            if (existsResponse.Exists)
             {
-                var existsResponse = await _client.Indices.ExistsAsync("products");
-                if (existsResponse.Exists)
-                {
-                    _logger.LogInformation("Elasticsearch index 'products' already exists.");
-                    return;
-                }
+                _logger.LogInformation("Elasticsearch index 'products' already exists.");
+                return;
+            }
 
-                var createResponse = await _client.Indices.CreateAsync("products", c => c
-                    .Map<Product>(m => m
-                        .Properties(p => p
-                            .Number(n => n.Name(f => f.Id).Type(NumberType.Integer))
-                            .Text(t => t.Name(f => f.Name).Analyzer("standard"))
-                            .Text(t => t.Name(f => f.Description).Analyzer("standard"))
-                            .Number(n => n.Name(f => f.Price).Type(NumberType.Double))
-                            .Keyword(k => k.Name(f => f.Category))
-                        )
+            var createResponse = await _client.Indices.CreateAsync("products", c => c
+                .Map<Product>(m => m
+                    .Properties(p => p
+                        .Number(n => n.Name(f => f.Id).Type(NumberType.Integer))
+                        .Text(t => t.Name(f => f.Name).Analyzer("standard"))
+                        .Text(t => t.Name(f => f.Description).Analyzer("standard"))
+                        .Number(n => n.Name(f => f.Price).Type(NumberType.Double))
+                        .Keyword(k => k.Name(f => f.Category))
                     )
-                );
+                )
+            );
 
-                if (!createResponse.IsValid)
-                {
-                    _logger.LogError("Failed to create Elasticsearch index: {Error}",
-                        createResponse.ServerError?.Error?.Reason ?? createResponse.OriginalException?.Message);
-                    throw new Exception("Failed to create 'products' index in Elasticsearch.");
-                }
-
-                _logger.LogInformation("Elasticsearch index 'products' created with mappings.");
-            }
-            catch (Exception ex)
+            if (!createResponse.IsValid)
             {
-                _logger.LogError(ex, "Error while ensuring Elasticsearch index exists.");
-                throw;
+                var error = createResponse.ServerError?.Error?.Reason
+                    ?? createResponse.OriginalException?.Message ?? "Unknown error";
+                throw new InvalidOperationException($"Failed to create 'products' index: {error}");
             }
+
+            _logger.LogInformation("Elasticsearch index 'products' created with mappings.");
         }
 
-        /// <inheritdoc />
         public async Task IndexProductAsync(Product product)
         {
-            try
+            // Uses Index (not IndexDocument) with explicit Id for idempotency.
+            // Re-indexing the same product.Id overwrites the document — no duplicates.
+            var response = await _client.IndexAsync(product, i => i.Index("products").Id(product.Id));
+            if (!response.IsValid)
             {
-                var response = await _client.IndexAsync(product, i => i.Index("products").Id(product.Id));
-                if (!response.IsValid)
-                {
-                    _logger.LogError("Failed to index product {Id} in Elasticsearch: {Error}",
-                        product.Id, response.ServerError?.Error?.Reason ?? response.OriginalException?.Message);
-                    throw new Exception($"Failed to index product {product.Id} in Elasticsearch.");
-                }
+                var error = response.ServerError?.Error?.Reason
+                    ?? response.OriginalException?.Message ?? "Unknown error";
+                _logger.LogError("Failed to index product {Id}: {Error}", product.Id, error);
+                throw new InvalidOperationException($"Failed to index product {product.Id}: {error}");
+            }
 
-                _logger.LogInformation("Product {Id} indexed in Elasticsearch.", product.Id);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Elasticsearch error while indexing product {Id}.", product.Id);
-                throw;
-            }
+            _logger.LogInformation("Product {Id} indexed in Elasticsearch.", product.Id);
         }
 
-        /// <inheritdoc />
-        public async Task BulkIndexAsync(IEnumerable<Product> products)
+        public async Task DeleteProductFromIndexAsync(int id)
         {
-            try
-            {
-                var response = await _client.BulkAsync(b => b
-                    .Index("products")
-                    .IndexMany(products, (descriptor, product) => descriptor.Id(product.Id))
-                );
+            var response = await _client.DeleteAsync<Product>(id, d => d.Index("products"));
 
-                if (response.Errors)
+            // 404 (NotFound) is acceptable — the document is already gone
+            if (!response.IsValid && response.Result != Result.NotFound)
+            {
+                var error = response.ServerError?.Error?.Reason
+                    ?? response.OriginalException?.Message ?? "Unknown error";
+                _logger.LogError("Failed to delete product {Id} from ES: {Error}", id, error);
+                throw new InvalidOperationException($"Failed to delete product {id} from ES: {error}");
+            }
+
+            _logger.LogInformation("Product {Id} deleted from Elasticsearch.", id);
+        }
+
+        public async Task<BulkIndexResult> BulkIndexAsync(IEnumerable<Product> products, int batchSize = 50)
+        {
+            var result = new BulkIndexResult();
+            var productList = products.ToList();
+            result.TotalRequested = productList.Count;
+
+            for (int i = 0; i < productList.Count; i += batchSize)
+            {
+                var batch = productList.Skip(i).Take(batchSize).ToList();
+
+                try
                 {
-                    foreach (var item in response.ItemsWithErrors)
+                    var response = await _client.BulkAsync(b => b
+                        .Index("products")
+                        .IndexMany(batch, (descriptor, product) => descriptor.Id(product.Id))
+                    );
+
+                    if (response.Errors)
                     {
-                        _logger.LogError("Failed to index product {Id}: {Error}", item.Id, item.Error?.Reason);
+                        // Log each failed document individually
+                        foreach (var item in response.ItemsWithErrors)
+                        {
+                            result.Failed++;
+                            result.FailedDocuments.Add(new BulkIndexError
+                            {
+                                ProductId = int.TryParse(item.Id, out var pid) ? pid : 0,
+                                Error = item.Error?.Reason ?? "Unknown error"
+                            });
+                            _logger.LogError("Bulk index failed for document {Id}: {Error}",
+                                item.Id, item.Error?.Reason);
+                        }
+                        result.Succeeded += response.Items.Count - response.ItemsWithErrors.Count();
                     }
-                    throw new Exception($"Bulk indexing completed with {response.ItemsWithErrors.Count()} errors.");
+                    else
+                    {
+                        result.Succeeded += response.Items.Count;
+                    }
                 }
+                catch (Exception ex)
+                {
+                    // Entire batch failed (network error, timeout, etc.)
+                    _logger.LogError(ex, "Entire batch {Start}-{End} failed during bulk indexing.",
+                        i, Math.Min(i + batchSize, productList.Count));
 
-                _logger.LogInformation("Bulk indexed {Count} products into Elasticsearch.", response.Items.Count);
+                    foreach (var product in batch)
+                    {
+                        result.Failed++;
+                        result.FailedDocuments.Add(new BulkIndexError
+                        {
+                            ProductId = product.Id,
+                            Error = $"Batch-level failure: {ex.Message}"
+                        });
+                    }
+                    // Continue to next batch — do NOT abort the entire operation
+                }
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Elasticsearch error during bulk indexing.");
-                throw;
-            }
+
+            _logger.LogInformation("Bulk index complete: {Succeeded}/{Total} succeeded, {Failed} failed.",
+                result.Succeeded, result.TotalRequested, result.Failed);
+
+            return result;
         }
 
-        /// <inheritdoc />
-        public async Task UpdateProductAsync(Product product)
+        public async Task<IEnumerable<Product>> SearchAsync(string query, int from = 0, int size = 10)
         {
-            try
-            {
-                var response = await _client.UpdateAsync<Product>(product.Id, u => u
-                    .Doc(product)
-                    .Index("products"));
-                if (!response.IsValid)
-                {
-                    _logger.LogError("Failed to update product {Id} in Elasticsearch: {Error}",
-                        product.Id, response.ServerError?.Error?.Reason ?? response.OriginalException?.Message);
-                    throw new Exception($"Failed to update product {product.Id} in Elasticsearch.");
-                }
+            var response = await _client.SearchAsync<Product>(s => s
+                .Index("products")
+                .From(from)
+                .Size(size)
+                .Query(q => q
+                    .MultiMatch(m => m
+                        .Fields(f => f
+                            .Field(p => p.Id)
+                            .Field(p => p.Name)
+                            .Field(p => p.Description)
+                        )
+                        .Query(query)
+                    )
+                )
+            );
 
-                _logger.LogInformation("Product {Id} updated in Elasticsearch.", product.Id);
-            }
-            catch (Exception ex)
+            if (!response.IsValid)
             {
-                _logger.LogError(ex, "Elasticsearch error while updating product {Id}.", product.Id);
-                throw;
+                var error = response.ServerError?.Error?.Reason
+                    ?? response.OriginalException?.Message ?? "Unknown error";
+                _logger.LogError("Search failed: {Error}", error);
+                throw new InvalidOperationException($"Search failed: {error}");
             }
-        }
 
-        /// <inheritdoc />
-        public async Task DeleteProductAsync(int id)
-        {
-            try
-            {
-                var response = await _client.DeleteAsync<Product>(id, d => d.Index("products"));
-                if (!response.IsValid)
-                {
-                    _logger.LogError("Failed to delete product {Id} from Elasticsearch: {Error}",
-                        id, response.ServerError?.Error?.Reason ?? response.OriginalException?.Message);
-                    throw new Exception($"Failed to delete product {id} from Elasticsearch.");
-                }
-
-                _logger.LogInformation("Product {Id} deleted from Elasticsearch.", id);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Elasticsearch error while deleting product {Id}.", id);
-                throw;
-            }
+            return response.Documents;
         }
     }
 }

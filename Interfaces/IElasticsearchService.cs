@@ -1,25 +1,29 @@
-﻿using SearchAPI.Models;
+using SearchAPI.Models;
 
 namespace SearchAPI.Interfaces
 {
     /// <summary>
-    /// Manages Elasticsearch operations for the Products index.
+    /// Manages all Elasticsearch operations. Every write operation is idempotent:
+    /// re-running the same operation produces the same result without duplicates.
     /// </summary>
     public interface IElasticsearchService
     {
-        /// <summary>Ensures the "products" index exists with the correct field mappings.</summary>
+        /// <summary>Creates the "products" index with proper field mappings if it does not exist.</summary>
         Task EnsureIndexCreatedAsync();
 
-        /// <summary>Indexes a single product document.</summary>
+        /// <summary>Indexes (or overwrites) a single product document using product.Id as the ES doc ID.</summary>
         Task IndexProductAsync(Product product);
 
-        /// <summary>Bulk-indexes a collection of products (used for initial data sync from SQL).</summary>
-        Task BulkIndexAsync(IEnumerable<Product> products);
+        /// <summary>Deletes a product document. Returns gracefully if doc does not exist (404).</summary>
+        Task DeleteProductFromIndexAsync(int id);
 
-        /// <summary>Updates an existing product document.</summary>
-        Task UpdateProductAsync(Product product);
+        /// <summary>
+        /// Bulk-indexes products in batches. A single failed document does NOT fail the entire batch.
+        /// Failed documents are returned in BulkIndexResult.FailedDocuments.
+        /// </summary>
+        Task<BulkIndexResult> BulkIndexAsync(IEnumerable<Product> products, int batchSize = 50);
 
-        /// <summary>Deletes a product document by its ID.</summary>
-        Task DeleteProductAsync(int id);
+        /// <summary>Full-text search across Id, Name, and Description fields.</summary>
+        Task<IEnumerable<Product>> SearchAsync(string query, int from = 0, int size = 10);
     }
 }
