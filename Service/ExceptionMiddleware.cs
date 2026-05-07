@@ -1,9 +1,5 @@
-﻿using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Logging;
-using Nest;
-using System;
-using System.Net;
-using System.Threading.Tasks;
+﻿using System.Net;
+using System.Text.Json;
 
 public class ExceptionMiddleware
 {
@@ -20,7 +16,6 @@ public class ExceptionMiddleware
     {
         try
         {
-            httpContext.Request.ContentType = "application/json";
             await _next(httpContext);
         }
         catch (Exception ex)
@@ -35,9 +30,12 @@ public class ExceptionMiddleware
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
 
-        return context.Response.WriteAsync(new {
-            context.Response.StatusCode,
-            Message = exception.Message
-        }.ToString());
+        var errorResponse = new
+        {
+            StatusCode = context.Response.StatusCode,
+            Message = "An internal server error occurred."
+        };
+
+        return context.Response.WriteAsync(JsonSerializer.Serialize(errorResponse));
     }
 }
