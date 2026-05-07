@@ -1,185 +1,164 @@
-﻿using Microsoft.Data.SqlClient;
-using Nest;
 using SearchAPI.Interfaces;
 using SearchAPI.Models;
-using System.Data;
+using System.Text.Json;
+using System.Transactions;
 
 namespace SearchAPI.Service
 {
+    /// <summary>
+    /// Orchestrates Product operations using the Transactional Outbox pattern.
+    ///
+    /// Write flow:
+    ///   1. Open TransactionScope
+    ///   2. Write to SQL (source of truth)
+    ///   3. Write outbox entry (same transaction — atomic with step 2)
+    ///   4. Commit transaction
+    ///   5. Attempt immediate ES sync (best-effort, outside transaction)
+    ///   6. If ES sync succeeds → mark outbox Completed
+    ///      If ES sync fails → outbox stays Pending → background service retries
+    /// </summary>
     public class ProductService : IProductService
     {
-        private readonly IElasticClient _elasticClient;
-
+        private readonly IProductRepository _productRepository;
+        private readonly ISyncOutboxRepository _outboxRepository;
+        private readonly IElasticsearchService _elasticsearchService;
         private readonly ILogger<ProductService> _logger;
-        private readonly ElasticSettings _elasticSettings;
-        public ProductService(IElasticClient elasticClient, ILogger<ProductService> logger, ElasticSettings elasticSettings)
+
+        public ProductService(
+            IProductRepository productRepository,
+            ISyncOutboxRepository outboxRepository,
+            IElasticsearchService elasticsearchService,
+            ILogger<ProductService> logger)
         {
-            _elasticClient = elasticClient;
+            _productRepository = productRepository;
+            _outboxRepository = outboxRepository;
+            _elasticsearchService = elasticsearchService;
             _logger = logger;
-            _elasticSettings = elasticSettings;
         }
+
+        public async Task<Product> CreateProductAsync(Product product)
+        {
+            Product created;
+            int outboxId;
+
+            // Atomic: SQL INSERT + outbox entry in one transaction
+            using (var scope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))
+            {
+                created = await _productRepository.CreateAsync(product);
+
+                outboxId = await _outboxRepository.AddAsync(new SyncOutboxEntry
+                {
+                    EntityId = created.Id,
+                    OperationType = "Index",
+                    Payload = JsonSerializer.Serialize(created)
+                });
+
+                scope.Complete();
+            }
+
+            // Best-effort immediate ES sync (outside transaction, non-blocking)
+            await TryImmediateEsSyncAsync(outboxId, () => _elasticsearchService.IndexProductAsync(created),
+                "index", created.Id);
+
+            return created;
+        }
+
+        public async Task<bool> UpdateProductAsync(Product product)
+        {
+            bool updated;
+            int outboxId;
+
+            using (var scope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))
+            {
+                updated = await _productRepository.UpdateAsync(product);
+                if (!updated)
+                    return false;
+
+                outboxId = await _outboxRepository.AddAsync(new SyncOutboxEntry
+                {
+                    EntityId = product.Id,
+                    OperationType = "Index", // Index = full overwrite, idempotent
+                    Payload = JsonSerializer.Serialize(product)
+                });
+
+                scope.Complete();
+            }
+
+            await TryImmediateEsSyncAsync(outboxId, () => _elasticsearchService.IndexProductAsync(product),
+                "update", product.Id);
+
+            return true;
+        }
+
+        public async Task<bool> DeleteProductAsync(int id)
+        {
+            bool deleted;
+            int outboxId;
+
+            using (var scope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))
+            {
+                deleted = await _productRepository.DeleteAsync(id);
+                if (!deleted)
+                    return false;
+
+                outboxId = await _outboxRepository.AddAsync(new SyncOutboxEntry
+                {
+                    EntityId = id,
+                    OperationType = "Delete"
+                });
+
+                scope.Complete();
+            }
+
+            await TryImmediateEsSyncAsync(outboxId, () => _elasticsearchService.DeleteProductFromIndexAsync(id),
+                "delete", id);
+
+            return true;
+        }
+
+        public async Task<Product?> GetProductByIdAsync(int id)
+        {
+            return await _productRepository.GetByIdAsync(id);
+        }
+
+        public async Task<List<Product>> GetAllProductsAsync()
+        {
+            return await _productRepository.GetAllAsync();
+        }
+
         public async Task<IEnumerable<Product>> SearchProductsAsync(string query)
         {
-
-            var pingResponse = await _elasticClient.PingAsync();
-            if (pingResponse.IsValid)
-            {
-                var existsResponse = _elasticClient.Indices.Exists("products");
-                if (existsResponse != null)
-                {
-
-                }
-            }
-            var response = await _elasticClient.SearchAsync<Product>(s => s
-            .Index("products")
-            .From(0)
-            .Size(10)
-            .Query(q => q
-                    .MultiMatch(m => m
-                        .Fields(f => f
-                            .Field(p => p.Id)
-                            .Field(p => p.Name)
-                            .Field(p => p.Description)
-                        )
-                        .Query(query)
-                    )
-                )
-            );
-            if (!response.IsValid)
-            {
-                _logger.LogError("Search Query Failed Due To", response.OriginalException.Message);
-                throw new Exception("Search Query Failed+" + response.OriginalException.Message + " +");
-
-            }
-
-            return response.Documents;
-
+            return await _elasticsearchService.SearchAsync(query);
         }
 
-        public async Task<string> CreateProductsAsync(Product product)
+        public async Task<BulkIndexResult> BulkIndexAllProductsAsync()
         {
-            String str = string.Empty;
-            using (var connection = new SqlConnection(_elasticSettings.SqlDBConnection))
-            {
-                await connection.OpenAsync();
-                var command = new SqlCommand("INSERT INTO Products (Name, Description, Price, Category) OUTPUT INSERTED.Id VALUES (@Name, @Description, @Price, @Category)", connection);
-                command.Parameters.AddWithValue("@Name", product.Name);
-                command.Parameters.AddWithValue("@Description", product.Description);
-                command.Parameters.AddWithValue("@Price", product.Price);
-                command.Parameters.AddWithValue("@Category", product.Category);
+            var products = await _productRepository.GetAllAsync();
+            if (products.Count == 0)
+                return new BulkIndexResult();
 
-                int value = (int)await command.ExecuteScalarAsync();
-                if (value > 0)
-                {
-                    str = "Product created";
-                }
-                else { str = "data not inserted in DB"; }
-            }
-            return str;
+            return await _elasticsearchService.BulkIndexAsync(products);
         }
 
-        public async Task DeleteProductAsync(int id)
-        {
-            using (var connection = new SqlConnection(_elasticSettings.SqlDBConnection))
-            {
-                await connection.OpenAsync();
-                var command = new SqlCommand("DELETE FROM Products WHERE Id = @Id", connection);
-                command.Parameters.AddWithValue("@Id", id);
-
-                await command.ExecuteNonQueryAsync();
-            }
-        }
-
-        public async Task UpdateProductAsync(Product product)
-        {
-            using (var connection = new SqlConnection(_elasticSettings.SqlDBConnection))
-            {
-                await connection.OpenAsync();
-                var command = new SqlCommand("UPDATE Products SET Name = @Name, Description = @Description, Price = @Price, Category = @Category WHERE Id = @Id", connection);
-                command.Parameters.AddWithValue("@Id", product.Id);
-                command.Parameters.AddWithValue("@Name", product.Name);
-                command.Parameters.AddWithValue("@Description", product.Description);
-                command.Parameters.AddWithValue("@Price", product.Price);
-                command.Parameters.AddWithValue("@Category", product.Category);
-
-                await command.ExecuteNonQueryAsync();
-            }
-        }
-        public async Task<Product> GetProductsAsync(int id)
-        {
-            Product product = null;
-            using (var connection = new SqlConnection(_elasticSettings.SqlDBConnection))
-            {
-                var query = "SELECT Id, Name, Description, Price FROM Products WHERE Id = @Id";
-                var command = new SqlCommand(query, connection);
-                command.Parameters.AddWithValue("@Id", id);
-
-                await connection.OpenAsync();
-                using (var reader = await command.ExecuteReaderAsync())
-                {
-                    if (await reader.ReadAsync())
-                    {
-                        product = new Product
-                        {
-                            Id = reader.GetInt32(0),
-                            Name = reader.GetString(1),
-                            Description = reader.GetString(2),
-                            Price = reader.GetDecimal(3)
-                        };
-                    }
-                }
-
-            }
-
-            return product;
-        }
-        public async Task<List<Product>> GetAllProducts()
+        /// <summary>
+        /// Attempts immediate ES sync after the SQL transaction commits.
+        /// If it succeeds, marks the outbox entry as Completed so the background
+        /// service won't re-process it. If it fails, logs a warning and leaves
+        /// the outbox entry as Pending for the background service to retry.
+        /// </summary>
+        private async Task TryImmediateEsSyncAsync(int outboxId, Func<Task> esOperation, string opName, int entityId)
         {
             try
             {
-                List<Product> products = new List<Product>();
-                using (var connection = new SqlConnection(_elasticSettings.SqlDBConnection))
-                {
-                    var query = "SELECT Id, Name, Description, Price FROM Products ";
-                    var command = new SqlCommand(query, connection);
-                    command.CommandType = CommandType.Text;
-                    using (SqlDataAdapter sda = new SqlDataAdapter(command))
-                    {
-                        using (DataTable dt = new DataTable())
-                        {
-                            try
-                            {
-                                sda.Fill(dt);
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(ex, "Check Db Connection");
-                                throw;
-                            }
-                            if (dt.Rows.Count > 0)
-                            {
-                                products = (from DataRow row in dt.Rows
-
-                                            select new Product
-                                            {
-                                                Id = Convert.ToInt32(row["Id"]),
-                                                Name = row["Name"].ToString() ?? string.Empty
-                                                ,
-                                                Description = row["Description"].ToString() ?? string.Empty,
-                                                Price = Convert.ToInt32(row["Price"])
-
-                                            }).ToList();
-
-                            }
-                        }
-                    }
-                    return products;
-                }
+                await esOperation();
+                await _outboxRepository.MarkAsCompletedAsync(outboxId);
+                _logger.LogInformation("Immediate ES {Op} succeeded for product {Id}.", opName, entityId);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "An error occurred while fetching products from the database.");
-                throw;
+                _logger.LogWarning(ex,
+                    "Immediate ES {Op} failed for product {Id}. Outbox entry {OutboxId} will be retried by background service.",
+                    opName, entityId, outboxId);
             }
         }
     }

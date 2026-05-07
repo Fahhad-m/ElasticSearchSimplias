@@ -1,49 +1,61 @@
 using Nest;
 using SearchAPI.Interfaces;
+using SearchAPI.Repositories;
 using SearchAPI.Service;
 using Microsoft.AspNetCore.SpaServices.Extensions;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using System.Collections.Specialized;
 using SearchAPI.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-
-
+// ── Configuration ─────────────────────────────────────────────────────────────
 builder.Configuration.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
-builder.Services.AddControllers();
-var elasettings = new ElasticSettings()
+
+var elasticUri = builder.Configuration["Elasticsearch:Uri"];
+if (string.IsNullOrWhiteSpace(elasticUri))
+    throw new InvalidOperationException("Elasticsearch:Uri must be configured in appsettings.json.");
+
+var appSettings = new ElasticSettings
 {
     SqlDBConnection = builder.Configuration.GetConnectionString("DefaultConnection") ?? string.Empty,
     ApiKey = builder.Configuration["Elasticsearch:ApiKey"] ?? string.Empty,
-    ElaUri = new Uri(builder.Configuration["Elasticsearch:Uri"]),
+    ElaUri = new Uri(elasticUri),
     Username = builder.Configuration["Elasticsearch:Username"] ?? string.Empty,
     ApiValue = builder.Configuration["Elasticsearch:Value"] ?? string.Empty,
     ElaIndex = builder.Configuration["Elasticsearch:Index"] ?? string.Empty,
     ReactUrl = builder.Configuration["React:PageUrl"] ?? string.Empty,
 };
-var settings = new ConnectionSettings(elasettings.ElaUri)
-    .DefaultIndex(elasettings.ElaIndex)
-       .ThrowExceptions(alwaysThrow: true)
-          .PrettyJson()
-          .RequestTimeout(TimeSpan.FromSeconds(300))
-          .ApiKeyAuthentication(elasettings.ApiKey, elasettings.ApiValue)
-          .GlobalHeaders(new NameValueCollection
+
+// ── Elasticsearch NEST Client ─────────────────────────────────────────────────
+// ThrowExceptions = false: we check IsValid on every response ourselves.
+// This gives us consistent error handling instead of surprise exceptions from NEST.
+var connectionSettings = new ConnectionSettings(appSettings.ElaUri)
+    .DefaultIndex(appSettings.ElaIndex)
+    .ThrowExceptions(alwaysThrow: false)
+    .PrettyJson()
+    .RequestTimeout(TimeSpan.FromSeconds(30))
+    .ApiKeyAuthentication(appSettings.ApiKey, appSettings.ApiValue)
+    .GlobalHeaders(new NameValueCollection
     {
-        { elasettings.ApiKey, elasettings.ApiValue }
+        { appSettings.ApiKey, appSettings.ApiValue }
     });
-var client = new ElasticClient(settings);
 
-builder.Services.AddSingleton<IElasticClient>(client);
-builder.Services.AddScoped<IProductService, ProductService>(provider =>
-    new ProductService(client, provider.GetRequiredService<ILogger<ProductService>>(), elasettings));
-builder.Services.AddSingleton<IProductService>(provider =>
-    new ProductService(client, provider.GetRequiredService<ILogger<ProductService>>(), elasettings));
+var elasticClient = new ElasticClient(connectionSettings);
 
+// ── Dependency Injection ──────────────────────────────────────────────────────
+// Singleton: shared across all requests (thread-safe, stateless)
+builder.Services.AddSingleton(appSettings);
+builder.Services.AddSingleton<IElasticClient>(elasticClient);
+
+// Scoped: one instance per HTTP request (safe for SqlConnection per-call pattern)
+builder.Services.AddScoped<IProductRepository, ProductRepository>();
+builder.Services.AddScoped<ISyncOutboxRepository, SyncOutboxRepository>();
+builder.Services.AddScoped<IProductService, ProductService>();
 builder.Services.AddScoped<IElasticsearchService, ElasticsearchService>();
+
+// Background service: outbox processor + initial sync
+builder.Services.AddHostedService<ElasticsearchSyncBackgroundService>();
+
 builder.Services.AddLogging(configure => configure.AddConsole());
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -52,7 +64,10 @@ builder.Services.AddSpaStaticFiles(configuration =>
 {
     configuration.RootPath = "ClientApp/build";
 });
+
+// ── HTTP Pipeline ─────────────────────────────────────────────────────────────
 var app = builder.Build();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseDeveloperExceptionPage();
@@ -61,27 +76,19 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseMiddleware<ExceptionMiddleware>();
-app.UseRouting();
-app.UseEndpoints(endpoints =>
-{
-    endpoints.MapControllers();
-});
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
 app.UseHttpsRedirection();
-app.MapControllers();
+app.UseRouting();
 app.UseStaticFiles();
 app.UseSpaStaticFiles();
+app.MapControllers();
 
 app.UseSpa(spa =>
 {
     spa.Options.SourcePath = "ClientApp";
     if (app.Environment.IsDevelopment())
     {
-        spa.UseProxyToSpaDevelopmentServer(elasettings.ReactUrl);
+        spa.UseProxyToSpaDevelopmentServer(appSettings.ReactUrl);
     }
 });
+
 app.Run();

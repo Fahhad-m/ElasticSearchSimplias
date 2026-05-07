@@ -1,10 +1,12 @@
-﻿using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Logging;
-using Nest;
-using System;
 using System.Net;
-using System.Threading.Tasks;
+using System.Text.Json;
 
+/// <summary>
+/// Global exception handler — last line of defence.
+/// Catches anything that escapes the controller try-catch blocks and returns
+/// a consistent JSON error response instead of an HTML stack trace or crash.
+/// Guards against double-write (response already started).
+/// </summary>
 public class ExceptionMiddleware
 {
     private readonly RequestDelegate _next;
@@ -20,24 +22,41 @@ public class ExceptionMiddleware
     {
         try
         {
-            httpContext.Request.ContentType = "application/json";
             await _next(httpContext);
+        }
+        catch (ArgumentException ex)
+        {
+            _logger.LogWarning(ex, "Bad request: {Message}", ex.Message);
+            await WriteResponseAsync(httpContext, HttpStatusCode.BadRequest, ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogError(ex, "Operation failed: {Message}", ex.Message);
+            await WriteResponseAsync(httpContext, HttpStatusCode.InternalServerError, "An internal error occurred.");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "An unhandled exception occurred.");
-            await HandleExceptionAsync(httpContext, ex);
+            _logger.LogError(ex, "Unhandled exception.");
+            await WriteResponseAsync(httpContext, HttpStatusCode.InternalServerError, "An unexpected error occurred.");
         }
     }
 
-    private static Task HandleExceptionAsync(HttpContext context, Exception exception)
+    private static async Task WriteResponseAsync(HttpContext context, HttpStatusCode statusCode, string message)
     {
-        context.Response.ContentType = "application/json";
-        context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+        // Guard: if the response has already started streaming, we cannot modify headers/status
+        if (context.Response.HasStarted)
+            return;
 
-        return context.Response.WriteAsync(new {
-            context.Response.StatusCode,
-            Message = exception.Message
-        }.ToString());
+        context.Response.ContentType = "application/json";
+        context.Response.StatusCode = (int)statusCode;
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            Success = false,
+            StatusCode = (int)statusCode,
+            Message = message
+        });
+
+        await context.Response.WriteAsync(payload);
     }
 }
